@@ -3,31 +3,21 @@
 # =========================================
 # Ultimate Interactive Wi-Fi Dashboard
 # =========================================
+# Live terminal dashboard for Linux Wi-Fi networks.
 # Features:
-# 1. Detects wireless interfaces automatically.
-# 2. Scans all nearby Wi-Fi APs (all standards: a/b/g/n/ac/ax).
-# 3. Estimates throughput based on standard, MCS, NSS, channel width.
-# 4. Displays RSSI bars for signal strength.
-# 5. Displays channel congestion bars.
-# 6. Top 3 recommended APs (taking DFS into account).
-# 7. Full table of all APs with color-coded throughput.
-# 8. Interactive sorting:
-#    - 's': sort by signal strength (RSSI)
-#    - 't': sort by throughput (default)
-#    - 'c': sort by channel load
-#    - 'q': quit
-# 9. Live refresh every 10 seconds.
+# - Supports all Wi-Fi standards: a/b/g/n/ac/ax
+# - RSSI bars (signal strength)
+# - Estimated throughput per AP (fractional channel widths supported)
+# - Channel congestion bars
+# - Top 3 recommended APs (avoiding DFS)
+# - Interactive sorting: s=Signal, t=Throughput, c=Channel Load, q=Quit
+# - Live refresh every 10 seconds
 # =========================================
 
 # -----------------------------
 # Function: estimate_throughput
-# Returns estimated throughput in Mbps based on Wi-Fi standard.
-# Parameters:
-# 1. standard: Wi-Fi standard (n, ac, ax)
-# 2. mcs: modulation coding scheme index
-# 3. nss: number of spatial streams
-# 4. width: channel width in MHz
-# 5. freq: frequency in MHz (used for legacy estimation)
+# Estimate theoretical throughput (Mbps) based on Wi-Fi standard.
+# Handles fractional widths and floating-point frequencies safely.
 # -----------------------------
 estimate_throughput() {
     local standard="$1"
@@ -36,26 +26,33 @@ estimate_throughput() {
     local width="$4"
     local freq="$5"
 
+    # Convert frequency to integer for comparisons
+    local freq_int=${freq%.*}
+
+    # Handle fractional width: scale by 10 to preserve decimal
+    local width_scaled=$(echo "$width * 10 / 1" | bc)
+
+    local est
+
     if [[ "$standard" == "ax" ]]; then
-        # Wi-Fi 6 theoretical formula approximation
-        local base=$((78*(mcs+1)))
-        echo $((base * nss * width / 20))
+        # Wi-Fi 6 approximation
+        est=$(( 78 * (mcs+1) * nss * width_scaled / (20*10) ))
     elif [[ "$standard" == "ac" ]]; then
-        # Wi-Fi 5 (AC) approximation
-        local base=$((86*(mcs+1)))
-        echo $((base * nss * width / 20))
+        # Wi-Fi 5 approximation
+        est=$(( 86 * (mcs+1) * nss * width_scaled / (20*10) ))
     elif [[ "$standard" == "n" ]]; then
-        # Wi-Fi 4 (N) approximation
-        local base=$((72*(mcs+1)))
-        echo $((base * nss * width / 20))
+        # Wi-Fi 4 approximation
+        est=$(( 72 * (mcs+1) * nss * width_scaled / (20*10) ))
     else
-        # Legacy rates for a/b/g
-        if [[ "$freq" -ge 5000 ]]; then
-            echo 54
+        # Legacy a/b/g
+        if (( freq_int >= 5000 )); then
+            est=54
         else
-            echo 54
+            est=54
         fi
     fi
+
+    echo $est
 }
 
 # -----------------------------
@@ -68,16 +65,15 @@ if [ -z "$iface" ]; then
 fi
 
 # -----------------------------
-# Initialize interactive sort mode
+# Default sort mode
 # -----------------------------
-sort_mode="throughput" # default sorting
+sort_mode="throughput" # options: throughput, rssi, chanload
 
 # -----------------------------
-# Function: check for key presses
-# Allows interactive sorting without blocking
+# Function: check for keypresses (interactive sorting)
 # -----------------------------
 get_sort_key() {
-    read -t 0.1 -n 1 key  # non-blocking read, 0.1 sec timeout
+    read -t 0.1 -n 1 key
     case "$key" in
         s) sort_mode="rssi" ;;
         t) sort_mode="throughput" ;;
@@ -94,7 +90,7 @@ while true; do
     recommended_done=0
 
     # -----------------------------
-    # Display dashboard legend
+    # Display legend
     # -----------------------------
     echo -e "\033[1;36mUltimate Wi-Fi Dashboard (Interface: $iface)\033[0m"
     echo -e "Colors = Throughput: \033[1;32mHigh\033[0m \033[32mMedium\033[0m \033[33mModerate\033[0m \033[31mLow\033[0m"
@@ -102,13 +98,11 @@ while true; do
     echo -e "Channel Load bars = Congestion per channel | ▮ = relative load (Green=Low, Yellow=Med, Red=High)"
     echo -e "Sort: [s]=Signal, [t]=Throughput, [c]=Channel Load, [q]=Quit | Current sort: $sort_mode\n"
 
-    # Check if user pressed a key for sorting
     get_sort_key
 
     # -----------------------------
-    # Scan nearby APs
+    # Scan nearby APs using iw
     # -----------------------------
-    # Each line: SSID	BSSID	Freq/Width	Standard	DFS	Security	RSSI	MCS	NSS
     mapfile -t aps < <(sudo iw dev "$iface" scan 2>/dev/null | awk '
     BEGIN { FS=":"; OFS="\t" }
     /^BSS/ {bssid=$2; ssid=""; freq=""; width=""; standard=""; dfs=""; sec=""; rssi=""; mcs=0; nss=0}
@@ -141,19 +135,18 @@ while true; do
     done
 
     # -----------------------------
-    # Compute estimated throughput and real throughput per AP
+    # Compute estimated throughput and real throughput
     # -----------------------------
     for line in "${aps[@]}"; do
         IFS=$'\t' read -r ssid bssid freq width standard dfs sec rssi mcs nss <<< "$line"
         chan_load=${channel_counts[$freq]}
         est=$(estimate_throughput "$standard" "$mcs" "$nss" "$width" "$freq")
-        # Adjust for channel congestion
         real_est=$((est / chan_load))
         aps_data+=("$ssid	$bssid	$freq/$width	$standard	$dfs	$sec	$rssi	$est	$chan_load	$real_est")
     done
 
     # -----------------------------
-    # Sort APs based on user selection
+    # Sort APs based on mode
     # -----------------------------
     case "$sort_mode" in
         rssi) sorted_aps=($(printf '%s\n' "${aps_data[@]}" | sort -nr -k7)) ;;
@@ -170,12 +163,12 @@ while true; do
     printf "%-25s %-17s %-12s %-5s %-5s %-9s %-22s %-20s %-9s %-8s\n" \
         "SSID" "BSSID" "Freq/Width" "Std" "DFS" "Sec" "RSSI" "Channel Load" "Est(Mbps)" "RealEst"
     echo "$top_aps" | while IFS=$'\t' read -r ssid bssid freqwidth standard dfs sec rssi est chan_load real_est; do
-        # RSSI bar
-        bar_length=$(( (100 + rssi) * 20 / 70 ))
+        rssi_int=${rssi%.*}
+        bar_length=$(( (100 + rssi_int) * 20 / 70 ))
         ((bar_length<0)) && bar_length=0
         ((bar_length>20)) && bar_length=20
         rssi_bar=$(printf '█%.0s' $(seq 1 $bar_length))
-        # Channel load bar
+
         max_chan_load=0
         for count in "${channel_counts[@]}"; do (( count > max_chan_load )) && max_chan_load=$count; done
         load_bar_length=$(( chan_load * 20 / max_chan_load ))
@@ -185,13 +178,14 @@ while true; do
         elif (( chan_load <= 2*max_chan_load/3 )); then load_color="\033[33m"
         else load_color="\033[31m"
         fi
+
         printf "%-25s %-17s %-12s %-5s %-5s %-9s %-22s %-20s %-9s %-8s\n" \
             "$ssid" "$bssid" "$freqwidth" "$standard" "$dfs" "$sec" "$rssi_bar" "$load_color$load_bar\033[0m" "$est" "$real_est"
     done
     echo -e "===========================================\n"
 
     # -----------------------------
-    # Full AP table
+    # Full dashboard table
     # -----------------------------
     echo -e "SSID                     BSSID             Freq/Chan Width  Std   DFS  Sec       RSSI                   Channel Load           Est.Mbps  ChanLoad  RealEst  Recommended"
     echo -e "--------------------------------------------------------------------------------------------------------------------------------------------"
@@ -199,12 +193,12 @@ while true; do
     recommended_done=0
     for entry in "${sorted_aps[@]}"; do
         IFS=$'\t' read -r ssid bssid freqwidth standard dfs sec rssi est chan_load real_est <<< "$entry"
-        # RSSI bar
-        bar_length=$(( (100 + rssi) * 20 / 70 ))
+        rssi_int=${rssi%.*}
+        bar_length=$(( (100 + rssi_int) * 20 / 70 ))
         ((bar_length<0)) && bar_length=0
         ((bar_length>20)) && bar_length=20
         rssi_bar=$(printf '█%.0s' $(seq 1 $bar_length))
-        # Channel load bar
+
         max_chan_load=0
         for count in "${channel_counts[@]}"; do (( count > max_chan_load )) && max_chan_load=$count; done
         load_bar_length=$(( chan_load * 20 / max_chan_load ))
@@ -214,6 +208,7 @@ while true; do
         elif (( chan_load <= 2*max_chan_load/3 )); then load_color="\033[33m"
         else load_color="\033[31m"
         fi
+
         # Throughput color
         if (( real_est >= 600 )); then color="\033[1;32m"
         elif (( real_est >= 300 )); then color="\033[32m"
