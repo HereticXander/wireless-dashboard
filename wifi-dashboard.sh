@@ -104,23 +104,26 @@ while true; do
     # Scan nearby APs using iw
     # -----------------------------
     mapfile -t aps < <(sudo iw dev "$iface" scan 2>/dev/null | awk '
-    BEGIN { FS=":"; OFS="\t" }
-    /^BSS/ {bssid=$2; ssid=""; freq=""; width=""; standard=""; dfs=""; sec=""; rssi=""; mcs=0; nss=0}
-    /SSID/ {ssid=$2}
-    /freq/ {freq=$2}
-    /channel width/ {width=$3}
-    /signal/ {rssi=$2}
-    /HT Capabilities/ {standard="n"}
-    /VHT Capabilities/ {standard="ac"}
-    /HE Capabilities/ {standard="ax"}
-    /RSN/ {sec="WPA2"}
-    /WPA3/ {sec="WPA3"}
-    /WPA/ {sec="WPA"}
-    /DFS/ {dfs="DFS"}
-    {
-        if(ssid!="" && freq!="" && standard!=""){
-            print ssid,bssid,freq,width,standard,dfs,sec,rssi,mcs,nss
-            ssid=""; freq=""; standard=""
+    BEGIN { RS="BSS "; FS="\n" }
+
+    NR>1 { 
+        ssid=""; freq=""; width=""; standard="n"; dfs=""; sec=""; rssi=""; mcs=0; nss=1
+        
+        for (i=1; i<=NF; i++) {
+            if ($i ~ /SSID:/)      {sub(/.*SSID: /,"",$i); ssid=$i}
+            if ($i ~ /freq:/)      {sub(/.*freq: /,"",$i); freq=$i}
+            if ($i ~ /signal:/)    {sub(/.*signal: /,"",$i); rssi=$i}
+            if ($i ~ /WPA3/)       {sec="WPA3"}
+            else if ($i ~ /RSN/)   {sec="WPA2"}
+            else if ($i ~ /WPA /)  {sec="WPA"}
+
+            if ($i ~ /HE Capabilities/) {standard="ax"}
+            else if ($i ~ /VHT Capabilities/) {standard="ac"}
+            else if ($i ~ /HT Capabilities/) {standard="n"}
+        }
+
+        if (ssid != "" && freq != "" && rssi != "") {
+            print ssid "\t" freq "\t" rssi "\t" standard "\t" sec
         }
     }')
 
@@ -163,7 +166,8 @@ while true; do
     printf "%-25s %-17s %-12s %-5s %-5s %-9s %-22s %-20s %-9s %-8s\n" \
         "SSID" "BSSID" "Freq/Width" "Std" "DFS" "Sec" "RSSI" "Channel Load" "Est(Mbps)" "RealEst"
     echo "$top_aps" | while IFS=$'\t' read -r ssid bssid freqwidth standard dfs sec rssi est chan_load real_est; do
-        rssi_int=${rssi%.*}
+        rssi_int=$(echo "$rssi" | awk '{print int($1)}')
+        freq_int=$(echo "$freq" | awk '{print int($1)}')
         bar_length=$(( (100 + rssi_int) * 20 / 70 ))
         ((bar_length<0)) && bar_length=0
         ((bar_length>20)) && bar_length=20
@@ -180,7 +184,7 @@ while true; do
         fi
 
         printf "%-25s %-17s %-12s %-5s %-5s %-9s %-22s %-20s %-9s %-8s\n" \
-            "$ssid" "$bssid" "$freqwidth" "$standard" "$dfs" "$sec" "$rssi_bar" "$load_color$load_bar\033[0m" "$est" "$real_est"
+            "$ssid" "$bssid" "$freqwidth" "$standard" "$dfs" "$sec" "$rssi_bar" "$load_colored="${load_color}${load_bar}\033[0m"" "$est" "$real_est"
     done
     echo -e "===========================================\n"
 
@@ -193,7 +197,8 @@ while true; do
     recommended_done=0
     for entry in "${sorted_aps[@]}"; do
         IFS=$'\t' read -r ssid bssid freqwidth standard dfs sec rssi est chan_load real_est <<< "$entry"
-        rssi_int=${rssi%.*}
+        rssi_int=$(echo "$rssi" | awk '{print int($1)}')
+        freq_int=$(echo "$freq" | awk '{print int($1)}')
         bar_length=$(( (100 + rssi_int) * 20 / 70 ))
         ((bar_length<0)) && bar_length=0
         ((bar_length>20)) && bar_length=20
@@ -222,8 +227,8 @@ while true; do
             recommended_done=1
         fi
 
-        printf "%s%-25s %-17s %-12s %-5s %-5s %-22s %-20s %-9s %-8s %s\033[0m\n" \
-            "$color" "$ssid" "$bssid" "$freqwidth" "$standard" "$dfs" "$rssi_bar" "$load_color$load_bar\033[0m" "$est" "$real_est" "$rec"
+        printf "%b%-25s %-17s %-12s %-5s %-5s %-22s %-20s %-9s %-8s %s\033[0m\n" \
+            "$color" "$ssid" "$bssid" "$freqwidth" "$standard" "$dfs" "$rssi_bar" "$load_colored="${load_color}${load_bar}\033[0m"" "$est" "$real_est" "$rec"
     done
 
     echo -e "\nPress [s]=Signal, [t]=Throughput, [c]=Channel Load, [q]=Quit | Current sort: $sort_mode"
